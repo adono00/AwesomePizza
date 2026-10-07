@@ -1,0 +1,188 @@
+AWESOME PIZZA - API ORDINI
+==========================
+
+Questo è il backend della prima iterazione del portale ordini di Awesome Pizza.
+Per ora non c'è nessuna interfaccia grafica: ci sono solo le API REST per
+ordinare le pizze e per seguire e aggiornare lo stato degli ordini. Il cliente
+non deve registrarsi, mentre il pizzaiolo fa il login e lavora un ordine alla
+volta.
+
+Tecnologie: .NET 10, C#, ASP.NET Core Web API, Entity Framework Core con
+SQL Server, autenticazione JWT, xUnit per i test.
+
+
+COME AVVIARLO
+-------------
+
+1) Apro la soluzione con Visual Studio (AwesomePizza.slnx). Se il file non c'è,
+   dalla cartella che contiene "src" e "tests" lo creo con questi due comandi,
+   da lanciare uno alla volta:
+
+     dotnet new sln -n AwesomePizza
+     dotnet sln add src/AwesomePizza.Api src/AwesomePizza.Service src/AwesomePizza.Repository tests/AwesomePizza.Tests
+
+2) Database. Si chiama AwesomePizza. Di default l'app punta a LocalDB (lo trovate
+   in src/AwesomePizza.Api/appsettings.json), quindi con Visual Studio non
+   serve configurare niente. Se si preferisce usare un altro SQL Server basta
+   creare il file src/AwesomePizza.Api/appsettings.Development.json con la
+   propria connessione:
+
+     {
+       "ConnectionStrings": {
+         "Default": "Server=NOME_SERVER;Database=AwesomePizza;User Id=...;Password=...;TrustServerCertificate=true"
+       }
+     }
+
+   L'utente SQL deve avere il permesso di creare database. Se non ce l'ha,
+   basta creare a mano un database vuoto chiamato AwesomePizza (con
+   db_owner per quell'utente): le tabelle le crea l'app.
+
+3) Migration. Le tabelle (Orders, OrderItem, Users e Logs) si creano da sole
+   all'avvio, perché l'app applica le migration che stanno in
+   src/AwesomePizza.Repository/Migrations. Se modifico il modello ne genero
+   una nuova. Lo strumento dotnet-ef si installa una volta sola:
+
+     dotnet tool install --global dotnet-ef
+
+   poi, dalla cartella con "src" e "tests":
+
+     dotnet ef migrations add NomeMigration --project src/AwesomePizza.Repository
+
+   Se invece si vuole uno script SQL da eseguire a mano:
+
+     dotnet ef migrations script --idempotent --project src/AwesomePizza.Repository --output Database/create-database.sql
+
+4) Utente della cucina e JWT. All'avvio, se la tabella Users è vuota, l'app crea
+   un pizzaiolo di prova con la password salvata in hash. Credenziali e
+   impostazioni del token stanno in src/AwesomePizza.Api/appsettings.json,
+   sezioni "Seed" e "Jwt":
+
+     utente:    pizzaiolo
+     password:  Pizza123!
+
+   Sono valori solo per sviluppo. In produzione la chiave del token (Jwt:Key)
+   si passa con la variabile d'ambiente Jwt__Key e l'utente di prova si cambia.
+
+5) Premo F5 con il profilo AwesomePizza.Api e si apre Swagger, dove si possono
+   provare tutte le chiamate:
+
+     http://localhost:5080/swagger
+
+   Se la porta fosse diversa, è scritta nella finestra Output alla riga
+   "Now listening on".
+
+6) I test si lanciano da Test > Esplora test, oppure con:
+
+     dotnet test
+
+
+COME PROVARLO DA SWAGGER
+------------------------
+
+1. POST /api/orders con un ordine, per esempio:
+
+     {
+       "customerName": "Mario",
+       "items": [
+         { "pizzaName": "Margherita", "quantity": 2, "notes": "senza cipolla" }
+       ]
+     }
+
+   Nella risposta c'è il codice dell'ordine (tipo AP-3F9A1C).
+2. GET /api/orders/{codice}: lo stato è Received.
+3. POST /api/auth/login con utente e password di prova: restituisce il token.
+   Lo copio, premo il pulsante Authorize di Swagger e lo incollo.
+4. GET /api/kitchen/queue: l'ordine è in coda.
+5. POST /api/kitchen/start-next: l'ordine passa a InProgress.
+   GET /api/kitchen/current lo mostra.
+6. POST /api/kitchen/complete-current: l'ordine diventa Completed.
+   Rifaccio il punto 2 per vederlo.
+
+
+COME FUNZIONA
+-------------
+
+Il cliente manda l'ordine con POST /api/orders (nome e pizze) e riceve un codice
+del tipo AP-3F9A1C. Con quel codice può controllare lo stato quando vuole con
+GET /api/orders/{codice}. Per ogni pizza si può aggiungere una nota facoltativa
+(massimo 200 caratteri), per esempio "senza cipolla".
+
+Un ordine passa per tre stati: Received (ricevuto), InProgress (in lavorazione)
+e Completed (completato).
+
+Il pizzaiolo deve prima fare il login con POST /api/auth/login (utente e
+password) e riceve un token JWT, valido 30 minuti, da mandare nell'header
+Authorization: Bearer <token>. Con quel token ha quattro chiamate:
+  - GET  /api/kitchen/queue            vede la coda, dal più vecchio al più recente
+  - GET  /api/kitchen/current          vede l'ordine che sta lavorando
+  - POST /api/kitchen/start-next       prende in carico il prossimo ordine
+  - POST /api/kitchen/complete-current segna come pronto quello in lavorazione
+
+La regola principale è che si lavora un ordine alla volta: se il pizzaiolo prova
+a prenderne un altro mentre uno è ancora aperto, riceve un 409 che gli dice
+quale ordine è rimasto in sospeso.
+
+Gli errori hanno sempre lo stesso formato (Problem Details):
+  400 richiesta non valida (nome mancante, nessuna pizza, quantità fuori range,
+      nota più lunga di 200 caratteri)
+  401 credenziali errate al login, oppure token mancante, scaduto o non valido
+  403 token valido ma senza il ruolo di pizzaiolo
+  404 ordine non trovato, coda vuota o nessun ordine in lavorazione
+  409 c'è già un ordine in lavorazione
+  500 errore imprevisto (i dettagli non escono, restano solo nei log)
+
+
+SCELTE CHE HO FATTO
+-------------------
+
+Tre progetti separati (Api, Service, Repository). L'Api si occupa solo di HTTP,
+il Service contiene le regole di business e il Repository parla con il database.
+Ogni progetto conosce solo quello sotto, così l'Api non vede il database e il
+Repository non sa niente di HTTP. Alla fine ho aggiunto un quarto progetto per i
+test.
+
+Repository pattern e dependency injection. Il Service usa un'interfaccia
+(IOrderRepository) e non Entity Framework direttamente. Così nei test posso
+sostituire il database con un repository finto in memoria e provare le regole
+senza toccare SQL Server.
+
+Global exception handler. Il Service lancia eccezioni con un significato
+(NotFoundException, ConflictException, UnauthorizedException) e un unico punto
+nell'Api le trasforma in 404, 409 e 401. Nei controller non ci sono try/catch.
+
+Autenticazione JWT solo per la cucina. I clienti restano anonimi, come da
+requisito, e proteggo solo gli endpoint del pizzaiolo con un ruolo
+(Authorize(Roles = ...)) sul KitchenController. Il login sta in un AuthService
+nel layer Service, non nel controller: cerca l'utente, verifica la password
+con PasswordHasher (le password sono salvate in hash) e genera il token. Per
+utente inesistente e password sbagliata rispondo con lo stesso errore, così
+non si capisce quale dei due è sbagliato.
+
+Note per pizza. Le note stanno sulla riga della pizza e non sull'ordine,
+perché una richiesta come "senza cipolla" riguarda una singola pizza.
+
+Log su console e su tabella. Ogni chiamata HTTP, ogni errore e ogni cambio di
+stato di un ordine viene registrato anche nella tabella Logs, compresi i login
+riusciti e falliti (mai la password). Nei messaggi degli ordini ci sono codice
+ordine, cliente, pizze e note, quindi si può ricostruire la storia di un
+ordine con una query:
+
+  SELECT * FROM Logs WHERE Message LIKE '%AP-3F9A1C%' ORDER BY Id;
+
+Migration all'avvio. Per questa prima iterazione l'app crea e aggiorna il
+database da sola, così chi la prova non deve eseguire script.
+
+
+COSA NON C'È ANCORA
+-------------------
+
+- La coda è pensata per un solo pizzaiolo. Con più cuochi servirebbe gestire
+  gli accessi concorrenti.
+- Le pizze sono testo libero: manca un menu con nomi e prezzi.
+- Gli utenti si creano solo con il seed all'avvio: mancano la gestione degli
+  utenti (creare, cambiare password, disattivare), il refresh token e un
+  limite ai tentativi di login.
+- C'è un solo ruolo (pizzaiolo): se servisse un amministratore andrebbe
+  aggiunto un ruolo sull'utente.
+- I log vengono scritti uno alla volta e in modo sincrono. Per il traffico di
+  una pizzeria va bene, con più carico passerei a una scrittura a blocchi.

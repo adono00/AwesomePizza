@@ -1,0 +1,19 @@
+# build
+bin/
+obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# test
+TestResults/
+
+# database locali
+*.db
+*.mdf
+*.ldf
+
+# configurazione locale con password (vedi la documentazione)
+appsettings.Development.json
